@@ -1,24 +1,13 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/shopify.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/shopify",
-      "dest": "/api/shopify"
-    },
-    {
-      "src": "/api/shopify",
-      "dest": "/api/shopify"
-    }
-  ],
   "functions": {
     "api/shopify.py": {
       "maxDuration": 300
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/shopify",
+      "destination": "/api/shopify"
+    }
+  ]
 }
