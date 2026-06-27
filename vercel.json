@@ -1,9 +1,4 @@
 {
-  "functions": {
-    "api/shopify.py": {
-      "maxDuration": 300
-    }
-  },
   "rewrites": [
     {
       "source": "/shopify",
