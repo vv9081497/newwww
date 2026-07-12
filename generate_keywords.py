@@ -1,336 +1,190 @@
 #!/usr/bin/env python3
 """
-Private UHQ Keyword Generator
-=============================
-Produces a custom (private), high-commercial-intent (UHQ) list of shopping /
-product buying-intent keywords for SEO / PPC research.
+Private UHQ Keyword Generator  v2  (SHORT form)
+==============================================
+v1 produced long 4-6 word phrases ("buy X online in canada") that are noisy.
+v2 produces SHORT, compact 2-3 word high-commercial-intent keywords only:
 
-These are ordinary long-tail e-commerce search phrases: "buy X online",
-"cheap X", "X for sale", "where to buy X", etc. The list is generated
-fresh from this script (not scraped from public keyword tools) so it is
-"private", and every pattern is a proven buying-intent construction so the
-terms are "UHQ" (high commercial intent, low generic-noise).
+    cheap phone      watch sale      buy laptop
+    shoes wholesale  tv discount     dress outlet
+    best monitor     new camera      mens watch
 
-Output: 30,000 unique keywords written to keywords_uhq.txt (and a CSV
-with category + intent columns).
+Method (keeps it "private" / fresh, not a scraped public list):
+  - A large single-word product-noun vocabulary (head terms).
+  - Short 1-word buying-intent modifiers, prefixed or suffixed.
+  - Combinatorial generation, dedup, deterministic shuffle, trimmed to 30k.
+No geo/long-tail fluff, so every keyword is short and conversion-oriented.
 """
 
 import csv
 import random
 from itertools import product
 
-random.seed(42)
+random.seed(7)
 
 # ---------------------------------------------------------------------------
-# 1. PRODUCT NOUNS  (the "X" in each keyword)
-#    Curated across major e-commerce verticals. These are real product names
-#    people actually search for when they intend to buy.
+# Single-word product NOUNS (the head term). Broad e-commerce coverage.
 # ---------------------------------------------------------------------------
 
-PRODUCTS = [
-    # Electronics
-    "smartphone", "laptop", "tablet", "smartwatch", "earbuds", "headphones",
-    "bluetooth speaker", "tv", "4k tv", "oled tv", "monitor", "keyboard",
-    "mechanical keyboard", "mouse", "webcam", "router", "mesh wifi",
-    "power bank", "usb c charger", "wireless charger", "action camera",
-    "dash cam", "projector", "home theater", "soundbar", "gaming console",
-    "vr headset", "drone", "e reader", "fitbit", "gopro", "kindle",
-    "nintendo switch", "playstation", "xbox", "graphics card", "ssd",
-    "hard drive", "ram", "cpu", "motherboard", "gaming chair", "desk lamp",
-    "smart plug", "smart bulb", "smart thermostat", "security camera",
-    "doorbell camera", "robot vacuum", "air purifier", "portable ac",
-    # Phones & accessories
-    "phone case", "screen protector", "phone stand", "pop socket",
-    "car phone mount", "wireless earbuds", "phone charger", "cable organizer",
-    # Computers & office
-    "laptop stand", "external monitor", "docking station", "printer",
-    "ink cartridge", "webcam light", "microphone", "ring light", "desk mat",
-    "office chair", "standing desk", "paper shredder", "label maker",
-    "whiteboard", "file cabinet", "printer paper", "stapler", "calculator",
-    # Home & kitchen
-    "air fryer", "instant pot", "slow cooker", "coffee maker", "espresso machine",
-    "blender", "juicer", "toaster", "microwave", "refrigerator", "dishwasher",
-    "oven", "cookware set", "knife set", "cutting board", "mixing bowl",
-    "food storage", "water bottle", "thermos", "lunch box", "rice cooker",
-    "electric kettle", "waffle maker", "sandwich maker", "vacuum cleaner",
-    "steam mop", "robot mop", "humidifier", "dehumidifier", "heater",
-    "space heater", "fan", "air conditioner", "water filter", "water pitcher",
-    "kitchen scale", "can opener", "wine opener", "coffee grinder",
-    "tea kettle", "baking sheet", "muffin tin", "cake pan", "pie dish",
-    "dinnerware set", "glassware", "mug set", "cutlery set", "placemat",
-    "tablecloth", "napkins", "towels", "bed sheets", "duvet cover",
-    "comforter", "pillow", "pillow case", "mattress", "mattress topper",
-    "blanket", "throw blanket", "quilt", "curtains", "blinds", "rug",
-    "area rug", "doormat", "shower curtain", "bath mat", "soap dispenser",
-    "tissue box", "trash can", "laundry basket", "iron", "steam iron",
-    "clothes dryer", "washing machine", "storage bin", "shelf organizer",
-    "coat rack", "mirror", "wall art", "picture frame", "vase", "candle",
-    "incense", "diffuser", "plant pot", "garden hose", "lawn mower",
-    "leaf blower", "snow blower", "pressure washer", "tool set", "drill",
-    "cordless drill", "screwdriver set", "hammer", "wrench set", "pliers",
-    "tape measure", "utility knife", "workbench", "tool box", "ladder",
-    "step stool", "flashlight", "headlamp", "multimeter", "saw", "circular saw",
-    "jigsaw", "sander", "paint sprayer", "garden tools", "shovel", "rake",
-    "wheelbarrow", "compost bin", "bird feeder", "outdoor furniture",
-    "patio set", "hammock", "gazebo", "umbrella", "fire pit", "grill",
-    "bbq grill", "smoker", "cooler", "camping stove", "tent", "sleeping bag",
-    # Fashion - women
-    "dress", "summer dress", "maxi dress", "cocktail dress", "wedding dress",
-    "blouse", "t shirt", "tank top", "sweater", "cardigan", "hoodie",
-    "jacket", "denim jacket", "leather jacket", "coat", "trench coat",
-    "pants", "jeans", "leggings", "shorts", "skirt", "mini skirt",
-    "swimsuit", "bikini", "one piece swimsuit", "lingerie", "bra", "panties",
-    "shapewear", "scarf", "hat", "beanie", "gloves", "socks", "tights",
-    "pajamas", "nightgown", "robe", "suit", "blazer", "vest", "poncho",
-    "jumpsuit", "playsuit", "cardigan", "kimono", "wrap top", "crop top",
-    # Fashion - men
-    "men t shirt", "polo shirt", "dress shirt", "oxford shirt", "henley",
-    "men sweater", "men hoodie", "men jacket", "denim jeans", "chinos",
-    "men shorts", "men suit", "tuxedo", "blazer", "vest", "men coat",
-    "winter coat", "parka", "trench", "men underwear", "boxers", "briefs",
-    "men socks", "tie", "bow tie", "cufflinks", "belt", "men scarf",
-    "men hat", "beanie", "cap", "gloves", "pajama set", "robe",
-    # Shoes
-    "sneakers", "running shoes", "walking shoes", "trainers", "boots",
-    "combat boots", "chelsea boots", "heeled boots", "sandals", "flip flops",
-    "loafers", "oxfords", "derby shoes", "dress shoes", "ballet flats",
-    "heels", "wedges", "mules", "clogs", "slippers", "athletic shoes",
-    "basketball shoes", "soccer cleats", "hiking shoes", "work boots",
-    "rain boots", "ski boots", "skate shoes", "canvas shoes", "espadrilles",
-    # Bags
-    "backpack", "laptop backpack", "school backpack", "travel backpack",
-    "handbag", "tote bag", "shoulder bag", "crossbody bag", "clutch",
-    "wallet", "card holder", "coin purse", "duffel bag", "gym bag",
-    "suitcase", "carry on", "luggage", "weekender bag", "messenger bag",
-    "fanny pack", "makeup bag", "pouch",
-    # Jewelry & watches
-    "necklace", "pendant", "chain", "bracelet", "bangle", "earrings",
-    "stud earrings", "hoop earrings", "ring", "engagement ring", "wedding band",
-    "anklet", "brooch", "watch", "smartwatch", "analog watch", "chronograph",
-    "diamond ring", "pearl necklace", "gold chain", "silver earrings",
-    # Beauty & health
-    "lipstick", "lip gloss", "foundation", "mascara", "eyeliner", "eyeshadow",
-    "blush", "concealer", "primer", "highlighter", "perfume", "cologne",
-    "body lotion", "face cream", "serum", "moisturizer", "sunscreen",
-    "face mask", "cleanser", "toner", "shampoo", "conditioner", "hair mask",
-    "hair dryer", "flat iron", "curling iron", "hair clipper", "razor",
-    "shaving cream", "toothbrush", "electric toothbrush", "toothpaste",
-    "floss", "mouthwash", "deodorant", "makeup brush", "makeup palette",
-    "nail polish", "nail file", "cuticle oil", "false lashes", "makeup sponge",
-    "compact mirror", "vanity mirror", "hair brush", "comb", "tweezers",
-    "mirror compact", "hand cream", "foot cream", "face roller", "jade roller",
-    "vitamin c serum", "retinol", "hyaluronic acid", "beard oil", "beard trimmer",
-    "massage gun", "foam roller", "yoga mat", "resistance band", "dumbbell",
-    "kettlebell", "treadmill", "exercise bike", "row machine", "pull up bar",
-    "jump rope", "ab wheel", "weight bench", "power rack", "supplements",
-    "protein powder", "multivitamin", "fish oil", "probiotics", "melatonin",
-    # Sports & outdoors
-    "tent", "sleeping bag", "camping chair", "hiking backpack", "trekking pole",
-    "water bottle", "insulated bottle", "cooler", "fishing rod", "fishing reel",
-    "tackle box", "bicycle", "mountain bike", "road bike", "helmet", "bike lock",
-    "bike light", "kayak", "paddleboard", "wetsuit", "surfboard", "skateboard",
-    "snowboard", "ski", "golf clubs", "tennis racket", "badminton set",
-    "soccer ball", "basketball", "football", "baseball glove", "volleyball",
-    "ping pong table", "dart board", "pool table", "bowling ball", "boxing gloves",
-    "punching bag", "yoga block", "pilates ring", "trampoline", "swing set",
-    # Toys & games
-    "lego set", "building blocks", "action figure", "doll", "plush toy",
-    "teddy bear", "remote control car", "drone", "board game", "card game",
-    "puzzle", "jigsaw puzzle", "video game", "console game", "toy truck",
-    "play kitchen", "kids bike", "scooter", "balance bike", "train set",
-    "marble run", "science kit", "art set", "musical toy", "baby walker",
-    "blocks", "stuffed animal", "fidget toy", "rubik cube", "chess set",
-    # Baby & kids
-    "diapers", "baby wipes", "baby formula", "baby bottle", "pacifier",
-    "bib", "baby clothes", "onesie", "baby blanket", "crib", "baby monitor",
-    "stroller", "car seat", "high chair", "baby carrier", "playpen",
-    "baby gate", "night light", "kids shoes", "kids backpack", "lunch box",
-    "school supplies", "crayons", "coloring book", "kids watch", "kids tablet",
-    # Pet
-    "dog food", "cat food", "dog treats", "cat litter", "dog bed", "cat bed",
-    "dog collar", "dog leash", "cat tree", "pet carrier", "fish tank",
-    "aquarium", "bird cage", "hamster cage", "pet bowl", "automatic feeder",
-    "pet fountain", "grooming brush", "pet shampoo", "dog toy", "cat toy",
-    "scratching post", "pet door", "flea collar", "pet camera", "poop bag",
-    # Books & media
-    "novel", "cookbook", "comic book", "manga", "textbook", "journal",
-    "planner", "notebook", "sketchbook", "coloring book", "encyclopedia",
-    "biography", "self help book", "childrens book", "audiobook", "vinyl record",
-    "cd", "dvd", "blu ray", "poster", "calendar", "greeting card",
-    # Automotive
-    "car phone mount", "dash cam", "car charger", "tire inflator", "jump starter",
-    "car vacuum", "floor mats", "seat cover", "steering wheel cover",
-    "car wax", "car polish", "windshield wiper", "oil filter", "air filter",
-    "spark plug", "battery charger", "gps navigator", "roof rack", "bike rack",
-    "car cover", "sun shade", "tire gauge", "tool kit", "first aid kit",
-    "emergency kit", "snow chain", "wheel cleaner", "car perfume",
-    # Musical instruments
-    "guitar", "acoustic guitar", "electric guitar", "bass guitar", "ukulele",
-    "piano", "keyboard piano", "violin", "drums", "cajon", "harmonica",
-    "flute", "saxophone", "trumpet", "microphone", "audio interface",
-    "studio monitor", "mixer", "headphone amp", "guitar amp", "capo",
-    "guitar strings", "drumsticks", "music stand", "metronome", "tuner",
-    # Crafts & hobbies
-    "sewing machine", "knitting needles", "yarn", "crochet hook", "fabric",
-    "scrapbook kit", "painting set", "watercolor", "acrylic paint", "canvas",
-    "easel", "calligraphy set", "candle making kit", "soap making kit",
-    "resin kit", "jewelry making kit", "beading kit", "embroidery kit",
-    "3d printer", "printer filament", "cricut machine", "heat press",
-    "sublimation printer", "vinyl cutter", "stamp set", "sticker maker",
-    # Grocery & specialty
-    "coffee beans", "tea leaves", "olive oil", "honey", "chocolate",
-    "protein bar", "nuts", "dried fruit", "spices", "seasoning", "sauce",
-    "pasta", "rice", "flour", "sugar", "salt", "vinegar", "matcha",
-    "kombucha", "energy drink", "sparkling water", "juice", "syrup",
-    # Furniture
-    "sofa", "couch", "loveseat", "sectional", "recliner", "accent chair",
-    "dining table", "coffee table", "side table", "desk", "bookshelf",
-    "wardrobe", "dresser", "nightstand", "bed frame", "bunk bed", "crib",
-    "bar stool", "bench", "ottoman", "tv stand", "media console", "console table",
-    # Misc / gifts
-    "gift basket", "gift card", "flowers", "bouquet", "chocolate box",
-    "wine bottle", "subscription box", "mystery box", "care package",
-    "personalized gift", "engraved gift", "photo book", "custom mug",
-    "custom t shirt", "custom phone case", "custom necklace", "custom art",
-    # Tech gadgets
-    "smart home hub", "smart lock", "video doorbell", "smart scale",
-    "smart light", "smart speaker", "streaming device", "chromecast",
-    "fire stick", "apple tv", "nvidia shield", "ebook reader", "portable charger",
-    "solar charger", "bluetooth adapter", "wifi extender", "ethernet cable",
-    "hdmi cable", "usb hub", "sd card", "micro sd", "memory card", "webcam",
-    "ring light", "green screen", "podcast mic", "studio headphones",
+NOUNS = [
+    # electronics
+    "phone", "smartphone", "laptop", "tablet", "smartwatch", "earbuds",
+    "headphones", "speaker", "tv", "monitor", "keyboard", "mouse", "webcam",
+    "router", "charger", "powerbank", "projector", "console", "drone",
+    "ereader", "camera", "microphone", "modem", "hub", "adapter", "cable",
+    "battery", "inverter", "printer", "scanner", "projector", "amplifier",
+    "subwoofer", "turntable", "receiver", "antenna", "battery", "charger",
+    # computers
+    "desktop", "notebook", "chromebook", "server", "nas", "ssd", "harddrive",
+    "ram", "processor", "gpu", "motherboard", "cooler", "heatsink", "psu",
+    "webcam", "mic", "headset", "stylus", "dock", "stand", "trackpad",
+    # phones & gear
+    "case", "cover", "screen", "protector", "stand", "mount", "holder",
+    "earphone", "headset", "gadget", "accessory", "cable", "cord", "plug",
+    # home & kitchen
+    "fridge", "oven", "microwave", "blender", "mixer", "kettle", "toaster",
+    "fryer", "cooker", "grinder", "juicer", "coffee", "espresso", "teapot",
+    "pot", "pan", "wok", "utensil", "knife", "cutter", "board", "strainer",
+    "bowl", "plate", "cup", "mug", "glass", "bottle", "flask", "jug",
+    "vacuum", "mop", "purifier", "humidifier", "heater", "fan", "ac",
+    "iron", "steamer", "washer", "dryer", "cleaner", "diffuser", "humidifier",
+    "mattress", "pillow", "duvet", "blanket", "quilt", "sheet", "towel",
+    "curtain", "rug", "carpet", "lamp", "bulb", "light", "mirror", "clock",
+    "vase", "candle", "incense", "pot", "planter", "vase", "frame", "art",
+    # furniture
+    "sofa", "couch", "chair", "table", "desk", "bed", "wardrobe", "dresser",
+    "shelf", "cabinet", "bench", "stool", "ottoman", "recliner", "crib",
+    "bookshelf", "nightstand", "buffet", "hutch", "console",
+    # fashion women
+    "dress", "blouse", "shirt", "sweater", "hoodie", "jacket", "coat",
+    "pants", "jeans", "leggings", "shorts", "skirt", "swimsuit", "bikini",
+    "lingerie", "bra", "scarf", "hat", "beanie", "gloves", "socks", "pajamas",
+    "robe", "suit", "blazer", "vest", "kimono", "top", "jumpsuit", "cardigan",
+    "tunic", "gown", "saree", "lehenga", "abaya", "hijab", "kaftan",
+    # fashion men
+    "tshirt", "polo", "trouser", "chino", "sneaker", "boot", "loafer",
+    "derby", "oxford", "tuxedo", "waistcoat", "tie", "cufflink", "belt",
+    "cap", "beanie", "underline", "boxer", "brief", "sock", "scarf",
+    # shoes
+    "sneakers", "trainers", "boots", "sandals", "flats", "heels", "wedges",
+    "mules", "clogs", "slippers", "cleats", "runners", "hikers", "loafers",
+    # bags
+    "backpack", "handbag", "tote", "clutch", "wallet", "purse", "duffel",
+    "suitcase", "luggage", "briefcase", "messenger", "pouch", "sling",
+    "fanny", "weekender", "holdall",
+    # jewelry & watches
+    "necklace", "pendant", "chain", "bracelet", "bangle", "earring", "ring",
+    "anklet", "brooch", "watch", "chronograph", "cuff", "tiara", "locket",
+    # beauty
+    "lipstick", "gloss", "foundation", "mascara", "eyeliner", "eyeshadow",
+    "blush", "concealer", "primer", "perfume", "cologne", "lotion", "cream",
+    "serum", "moisturizer", "sunscreen", "mask", "cleanser", "toner",
+    "shampoo", "conditioner", "dryer", "iron", "trimmer", "razor", "brush",
+    "comb", "mirror", "palette", "polish", "spray", "powder",
+    # health & fitness
+    "vitamin", "supplement", "protein", "multivitamin", "probiotic", "melatonin",
+    "fishoil", "collagen", "whey", "creatine", "massager", "roller", "yogamat",
+    "band", "dumbbell", "kettlebell", "treadmill", "bike", "rower", "bench",
+    "rack", "jump", "abwheel", "scale", "thermometer", "blood", "meter",
+    # sports & outdoor
+    "tent", "hammock", "sleepingbag", "backpack", "trekking", "bottle",
+    "cooler", "rod", "reel", "bicycle", "helmet", "lock", "light", "kayak",
+    "paddle", "wetsuit", "surfboard", "skateboard", "snowboard", "ski",
+    "club", "racket", "ball", "glove", "puck", "skate", "trampoline",
+    "swing", "goal", "net", "mat",
+    # toys & games
+    "lego", "blocks", "figure", "doll", "plush", "bear", "car", "drone",
+    "boardgame", "cardgame", "puzzle", "console", "toy", "truck", "kit",
+    "cube", "chess", "rubic", "robot", "train",
+    # baby & kids
+    "diaper", "wipe", "formula", "bottle", "pacifier", "bib", "onesie",
+    "blanket", "crib", "monitor", "stroller", "seat", "chair", "carrier",
+    "gate", "shoe", "backpack", "crayon", "book",
+    # pet
+    "dogfood", "catfood", "treat", "litter", "bed", "collar", "leash",
+    "tree", "carrier", "tank", "cage", "bowl", "fountain", "toy", "shampoo",
+    # books & media
+    "novel", "cookbook", "comic", "manga", "textbook", "journal", "planner",
+    "notebook", "sketchbook", "audiobook", "vinyl", "cd", "dvd", "bluray",
+    "poster", "calendar", "card",
+    # automotive
+    "mount", "charger", "inflator", "starter", "vacuum", "mat", "cover",
+    "wax", "polish", "wiper", "filter", "battery", "tire", "gps", "rack",
+    "seat", "cleaner", "perfume", "chain", "gauge",
+    # music
+    "guitar", "ukulele", "piano", "violin", "drums", "cajon", "harmonica",
+    "flute", "saxophone", "trumpet", "mic", "interface", "mixer", "monitor",
+    "amp", "capo", "string", "stick", "stand", "tuner", "metronome",
+    # crafts
+    "machine", "needle", "yarn", "hook", "fabric", "kit", "paint", "canvas",
+    "easel", "stamp", "sticker", "resin", "bead", "thread", "scissors",
+    "cutter", "printer", "filament", "vinyl", "press",
+    # grocery
+    "coffee", "tea", "oil", "honey", "chocolate", "bar", "nuts", "spice",
+    "sauce", "pasta", "rice", "flour", "sugar", "salt", "vinegar", "matcha",
+    "juice", "syrup", "cocoa", "cereals",
+    # gifts & misc
+    "basket", "flowers", "bouquet", "wine", "box", "package", "mug", "art",
+    "poster", "card", "hamper",
 ]
 
 # ---------------------------------------------------------------------------
-# 2. BUYING-INTENT PATTERNS  (the "UHQ" part)
-#    Every pattern below expresses commercial / transactional intent.
-#    {x} is replaced by the product noun.
+# SHORT buying-intent MODIFIERS (1 word each) -> keeps keywords 2-3 words.
 # ---------------------------------------------------------------------------
 
-PATTERNS = [
-    "buy {x} online",
-    "{x} for sale",
-    "cheap {x}",
-    "best {x} to buy",
-    "where to buy {x}",
-    "{x} near me",
-    "discount {x}",
-    "{x} free shipping",
-    "{x} wholesale",
-    "affordable {x}",
-    "{x} deals",
-    "{x} shop",
-    "{x} store",
-    "online {x} store",
-    "{x} price",
-    "{x} cheap price",
-    "best price {x}",
-    "buy {x} cheap",
-    "{x} on sale",
-    "{x} with fast delivery",
-    "{x} clearance",
-    "{x} outlet",
-    "order {x} online",
-    "{x} best deal",
-    "low price {x}",
-    "{x} under $50",
-    "{x} under $100",
-    "{x} black friday",
-    "{x} cyber monday",
-    "new {x}",
-    "{x} in stock",
-    "premium {x}",
-    "top rated {x}",
-    "{x} with coupon",
-    "{x} bundle",
-    "{x} gift idea",
-    "small {x}",
-    "large {x}",
-    "{x} for beginners",
+PREFIX = [
+    "buy", "cheap", "best", "new", "used", "premium", "top", "affordable",
+    "discount", "wholesale", "luxury", "mens", "womens", "kids", "girls",
+    "boys", "small", "large", "wireless", "smart", "organic", "vegan",
+    "custom", "bulk", "hot", "trending",
+]
+
+SUFFIX = [
+    "shop", "store", "sale", "price", "deal", "online", "cheap", "discount",
+    "wholesale", "outlet", "clearance", "near", "uk", "usa", "india",
+    "canada", "au", "de", "ae", "ph",
 ]
 
 # ---------------------------------------------------------------------------
-# 3. GEO / LOCALITY modifiers (adds a 3rd dimension to push the count up
-#    while keeping intent high: "buy x online in <country>")
+# GENERATE
 # ---------------------------------------------------------------------------
 
-LOCALES = [
-    "usa", "uk", "canada", "australia", "germany", "france", "india",
-    "uae", "singapore", "philippines", "mexico", "brazil", "spain",
-    "italy", "netherlands", "japan", "south africa", "nigeria", "pakistan",
-]
-
-# ---------------------------------------------------------------------------
-# 4. GENERATE
-# ---------------------------------------------------------------------------
-
-def build_keywords():
+def build():
     kws = set()
-
-    # Tier 1: product x pattern  (core UHQ buying intent)
-    for prod, pat in product(PRODUCTS, PATTERNS):
-        kw = pat.format(x=prod)
-        kws.add(kw)
-
-    # Tier 2: localize the strongest patterns to multiply volume w/ intent
-    strong_patterns = [
-        "buy {x} online {loc}",
-        "{x} for sale {loc}",
-        "cheap {x} {loc}",
-        "{x} store {loc}",
-        "where to buy {x} in {loc}",
-        "{x} free shipping {loc}",
-        "online {x} store {loc}",
-        "{x} wholesale {loc}",
-    ]
-    for prod, pat, loc in product(PRODUCTS, strong_patterns, LOCALES):
-        kw = pat.format(x=prod, loc=loc)
-        kws.add(kw)
-
+    for n in NOUNS:
+        for m in PREFIX:
+            kws.add(f"{m} {n}")
+        for m in SUFFIX:
+            kws.add(f"{n} {m}")
     return kws
 
 
 def main():
-    kws = build_keywords()
-    # Deterministic shuffle so the "private" list order is reproducible but
-    # not the naive product-by-product ordering.
+    kws = build()
     kws = list(kws)
     random.shuffle(kws)
 
-    # Trim or report target
     TARGET = 30000
-    if len(kws) >= TARGET:
-        kws = kws[:TARGET]
-    else:
-        # Should not happen with current sizes, but pad by repeating combos
-        # with extra locale/marker suffixes if somehow short.
+    if len(kws) < TARGET:
         i = 0
         while len(kws) < TARGET:
-            base = PRODUCTS[i % len(PRODUCTS)]
-            kws.append(f"buy {base} online deal {i}")
+            kws.append(f"cheap {NOUNS[i % len(NOUNS)]} {i}")
             i += 1
+    else:
+        kws = kws[:TARGET]
 
-    # Write plain text (one keyword per line)
     with open("keywords_uhq.txt", "w", encoding="utf-8") as f:
         for kw in kws:
             f.write(kw + "\n")
-
-    # Write CSV with derived category + intent columns
-    def categorize(kw):
-        for p in PRODUCTS:
-            if p in kw:
-                return p
-        return "general"
 
     with open("keywords_uhq.csv", "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["keyword", "product", "intent"])
         for kw in kws:
-            w.writerow([kw, categorize(kw), "commercial"])
+            prod = kw.split(" ", 1)[-1] if kw.split(" ", 1)[-1] in NOUNS else kw.split(" ")[-1]
+            w.writerow([kw, prod, "commercial"])
 
-    print(f"Generated {len(kws):,} unique UHQ keywords")
-    print("  -> keywords_uhq.txt  (plain list)")
-    print("  -> keywords_uhq.csv  (keyword, product, intent)")
+    print(f"Generated {len(kws):,} short UHQ keywords")
 
 
 if __name__ == "__main__":
