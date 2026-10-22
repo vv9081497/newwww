@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/shopify",
-      "destination": "/api/shopify"
-    }
-  ]
-}
