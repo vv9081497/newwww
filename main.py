@@ -1,6 +1,5 @@
-
 """
-Cashfree checker API — FastAPI endpoint (fixed ₹230, debit-only).
+Cashfree checker API — FastAPI endpoint (fixed ₹230, debit-family only).
 
 Usage:
     GET /cashfree?cc=4001679034804536|01|2029|629&proxy=user:pass@host:port
@@ -53,14 +52,33 @@ async def cashfree(cc: str = Query(default=""), proxy: str = Query(default=""), 
         import logging
         msg = str(e) or ""
         low = msg.lower()
-        logging.getLogger("cashfree").error("check failed for %s: %s", cc[:6], msg[:200])
-        if any(k in low for k in ("proxy", "curl", "timed out", "timeout", "connect", "resolve", "tunnel", "refused")):
+        logging.getLogger("cashfree").error("check failed for %s: %s", cc[:6], msg[:500])
+
+        # classification — real message goes into real_response
+        if any(k in low for k in ("proxy", "curl", "timed out", "timeout",
+                                   "connect", "resolve", "tunnel", "refused")):
             code = "PROXY_ERROR"
+        elif "payment submit failed: HTTP 400" in low:
+            code = "PAYMENT_400"
+        elif "payment submit failed: HTTP 502" in low or "payment submit failed: HTTP 503" in low:
+            code = "CASHFREE_UPSTREAM"
+        elif "eligibility failed" in low:
+            code = "ELIGIBILITY_ERROR"
+        elif "impersonate" in low or "profile" in low:
+            code = "IMPERSONATE_ERROR"
+        elif "could not find" in low or "could not extract" in low:
+            code = "MERCHANT_SHAPE"
         else:
             code = "ERROR"
+
         return JSONResponse({
-            "cc": cc, "response_code": code, "response": "ERROR", "real_response": "ERROR",
-            "amount": "230.00", "currency": "INR", "gateway": "Cashfree",
+            "cc": cc,
+            "response_code": code,
+            "response": "ERROR",
+            "real_response": msg[:400] or "ERROR",   # ← the actual reason
+            "amount": "230.00",
+            "currency": "INR",
+            "gateway": "Cashfree",
         })
 
 
